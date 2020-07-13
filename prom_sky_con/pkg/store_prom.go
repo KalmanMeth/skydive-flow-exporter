@@ -19,9 +19,12 @@ package core
 
 import (
 	"fmt"
+	"os"
 	"strconv"
+	"time"
 	"net/http"
 
+	cache "github.com/pmylund/go-cache"
 	"github.com/spf13/viper"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -32,6 +35,10 @@ import (
 	"github.com/skydive-project/skydive-flow-exporter/core"
 )
 
+const defaultConnectionTimeout = 5
+
+// data to be exported to prometheus
+// one data item per tuple
 var (
 	bytesSent = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -43,17 +50,26 @@ var (
 )
 
 type storePrometheus struct {
-	pipeline  *core.Pipeline
+	// pipeline  *core.Pipeline // not currently used
 	port string
+	connectionCache *cache.Cache
+	connectionTimeout int64
 }
 
-// SetPipeline setup
+type cacheEntry struct {
+	label1 prometheus.Labels
+	label2 prometheus.Labels
+	timeStamp int64
+}
+
+// SetPipeline setup; called by core/pipeline.NewPipeline
 func (s *storePrometheus) SetPipeline(pipeline *core.Pipeline) {
-	s.pipeline = pipeline
+	// s.pipeline = pipeline
 }
 
 // StoreFlows store flows in memory, before being written to the object store
 func (s *storePrometheus) StoreFlows(flows map[core.Tag][]interface{}) error {
+	secs := time.Now().Unix()
 	for _, val := range flows {
 		for _, i := range val {
 			f := i.(*flow.Flow)
@@ -67,7 +83,7 @@ func (s *storePrometheus) StoreFlows(flows map[core.Tag][]interface{}) error {
 			target_port := strconv.FormatInt(f.Transport.B, 10)
 			node_tid := f.NodeTID
 			direction := "initiator_to_target"
-			label := prometheus.Labels {
+			label1 := prometheus.Labels {
 				"initiator_ip": initiator_ip,
 				"target_ip": target_ip,
 				"initiator_port": initiator_port,
@@ -75,7 +91,7 @@ func (s *storePrometheus) StoreFlows(flows map[core.Tag][]interface{}) error {
 				"direction": direction,
 				"node_tid": node_tid,
 				}
-			bytesSent.With(label).Set(float64(f.Metric.ABBytes))
+			bytesSent.With(label1).Set(float64(f.Metric.ABBytes))
 			direction = "target_to_initiator"
 			label2 := prometheus.Labels {
 				"initiator_ip": initiator_ip,
@@ -86,9 +102,32 @@ func (s *storePrometheus) StoreFlows(flows map[core.Tag][]interface{}) error {
 				"node_tid": node_tid,
 				}
 			bytesSent.With(label2).Set(float64(f.Metric.BABytes))
+			cEntry := cacheEntry {
+				label1: label1,
+				label2: label2,
+				timeStamp: secs,
+			}
+			s.connectionCache.Set(f.L3TrackingID, cEntry, 0)
 		}
 	}
+	s.cleanupExpiredEntries()
 	return nil
+}
+
+// cleanupExpiredEntries - any entry that has expired should be removed from the prometheus reporting and cache
+func (s *storePrometheus) cleanupExpiredEntries() {
+	secs := time.Now().Unix()
+	expireTime := secs - s.connectionTimeout
+	entriesMap := s.connectionCache.Items()
+	for  k, v := range entriesMap {
+		v2 := v.Object.(cacheEntry)
+		if v2.timeStamp < expireTime {
+			// clean up the entry
+			bytesSent.Delete(v2.label1)
+			bytesSent.Delete(v2.label2)
+			s.connectionCache.Delete(k)
+		}
+	}
 }
 
 func registerCollector(c prometheus.Collector) {
@@ -105,11 +144,14 @@ func startPrometheusInterface(s *storePrometheus) {
 	// via an HTTP server. "/metrics" is the usual endpoint for that.
 	http.Handle("/metrics", promhttp.Handler())
 
-	//http.ListenAndServe(":9080", nil)
-	http.ListenAndServe(s.port, nil)
+	err := http.ListenAndServe(s.port, nil)
+	if err != nil {
+		logging.GetLogger().Errorf("error on http.ListenAndServe = %s", err)
+		os.Exit(1)
+	}
 }
 
-// NewStorePrometheus returns a new interface for storing flows info to prometheus
+// NewStorePrometheus returns a new interface for storing flows info to prometheus and starts the interface
 func NewStorePrometheus(cfg *viper.Viper) (interface{}, error) {
 	port_id := cfg.GetString(core.CfgRoot + "store.prom_sky_con.port")
 	if  port_id == "" {
@@ -117,8 +159,15 @@ func NewStorePrometheus(cfg *viper.Viper) (interface{}, error) {
 		return nil, fmt.Errorf("Failed to detect port number")
 	}
 	logging.GetLogger().Infof("prometheus skydive port = %s", port_id)
+	connectionTimeout := cfg.GetInt64(core.CfgRoot + "store.prom_sky_con.connection_timeout")
+	if connectionTimeout == 0 {
+		connectionTimeout = defaultConnectionTimeout
+	}
+	logging.GetLogger().Infof("connection timeout = %d", connectionTimeout)
 	s := &storePrometheus{
 		port: ":" + port_id,
+		connectionCache: cache.New(0, 0),
+		connectionTimeout: connectionTimeout,
 	}
 	go startPrometheusInterface(s)
 	return s, nil
