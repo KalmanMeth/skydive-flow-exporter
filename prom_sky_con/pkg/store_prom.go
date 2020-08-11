@@ -26,10 +26,10 @@ package core
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"strconv"
 	"time"
-	"net/http"
 
 	cache "github.com/pmylund/go-cache"
 	"github.com/spf13/viper"
@@ -37,9 +37,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/skydive-project/skydive-flow-exporter/core"
 	"github.com/skydive-project/skydive/flow"
 	"github.com/skydive-project/skydive/logging"
-	"github.com/skydive-project/skydive-flow-exporter/core"
 )
 
 // Connections with no traffic for timeout period (in seconds) are no longer reported
@@ -61,16 +61,16 @@ var (
 )
 
 type storePrometheus struct {
-	pipeline  *core.Pipeline // not currently used
-	port string
-	connectionCache *cache.Cache
+	pipeline          *core.Pipeline // not currently used
+	port              string
+	connectionCache   *cache.Cache
 	connectionTimeout int64
 }
 
 // we maintain a cache to keep track of connections that have been active/inactive
 type cacheEntry struct {
-	label1 prometheus.Labels
-	label2 prometheus.Labels
+	label1    prometheus.Labels
+	label2    prometheus.Labels
 	timeStamp int64
 }
 
@@ -95,28 +95,28 @@ func (s *storePrometheus) StoreFlows(flows map[core.Tag][]interface{}) error {
 			initiator_port := strconv.FormatInt(f.Transport.A, 10)
 			target_port := strconv.FormatInt(f.Transport.B, 10)
 			node_tid := f.NodeTID
-			label1 := prometheus.Labels {
-				"initiator_ip": initiator_ip,
-				"target_ip": target_ip,
+			label1 := prometheus.Labels{
+				"initiator_ip":   initiator_ip,
+				"target_ip":      target_ip,
 				"initiator_port": initiator_port,
-				"target_port": target_port,
-				"direction": "initiator_to_target",
-				"node_tid": node_tid,
-				}
-			label2 := prometheus.Labels {
-				"initiator_ip": initiator_ip,
-				"target_ip": target_ip,
+				"target_port":    target_port,
+				"direction":      "initiator_to_target",
+				"node_tid":       node_tid,
+			}
+			label2 := prometheus.Labels{
+				"initiator_ip":   initiator_ip,
+				"target_ip":      target_ip,
 				"initiator_port": initiator_port,
-				"target_port": target_port,
-				"direction": "target_to_initiator",
-				"node_tid": node_tid,
-				}
+				"target_port":    target_port,
+				"direction":      "target_to_initiator",
+				"node_tid":       node_tid,
+			}
 			// post the info to prometheus
 			bytesSent.With(label1).Set(float64(f.Metric.ABBytes))
 			bytesSent.With(label2).Set(float64(f.Metric.BABytes))
-			cEntry := cacheEntry {
-				label1: label1,
-				label2: label2,
+			cEntry := cacheEntry{
+				label1:    label1,
+				label2:    label2,
 				timeStamp: secs,
 			}
 			s.connectionCache.Set(f.L3TrackingID, cEntry, 0)
@@ -131,7 +131,7 @@ func (s *storePrometheus) cleanupExpiredEntries() {
 		secs := time.Now().Unix()
 		expireTime := secs - s.connectionTimeout
 		entriesMap := s.connectionCache.Items()
-		for  k, v := range entriesMap {
+		for k, v := range entriesMap {
 			v2 := v.Object.(cacheEntry)
 			if v2.timeStamp < expireTime {
 				// clean up the entry
@@ -171,7 +171,7 @@ func startPrometheusInterface(s *storePrometheus) {
 func NewStorePrometheus(cfg *viper.Viper) (interface{}, error) {
 	// process user defined parameters from yml file
 	port_id := cfg.GetString(core.CfgRoot + "store.prom_sky_con.port")
-	if  port_id == "" {
+	if port_id == "" {
 		logging.GetLogger().Errorf("prometheus skydive port missing in configuration file")
 		return nil, fmt.Errorf("Failed to detect port number")
 	}
@@ -182,8 +182,8 @@ func NewStorePrometheus(cfg *viper.Viper) (interface{}, error) {
 	}
 	logging.GetLogger().Infof("connection timeout = %d", connectionTimeout)
 	s := &storePrometheus{
-		port: ":" + port_id,
-		connectionCache: cache.New(0, 0),
+		port:              ":" + port_id,
+		connectionCache:   cache.New(0, 0),
 		connectionTimeout: connectionTimeout,
 	}
 	go startPrometheusInterface(s)
