@@ -21,4 +21,4 @@ pipeline:
     type: prom_sky_con
     prom_sky_con:
       port: 9100
-      connection_timeout: 5
+      connection_timeout: 60
