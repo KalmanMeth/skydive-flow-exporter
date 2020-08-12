@@ -22,7 +22,7 @@
  * Users may use the enclosed example as a base upon which to report additional skydive metrics through prometheus.
  */
 
-package core
+package pkg
 
 import (
 	"fmt"
@@ -46,7 +46,7 @@ import (
 const defaultConnectionTimeout = 60
 
 // Run the cleanup process every cleanupTime seconds
-const cleanupTime = 60
+const cleanupTime = 120
 
 // data to be exported to prometheus
 // one data item per tuple
@@ -89,7 +89,6 @@ func (s *storePrometheus) StoreFlows(flows map[core.Tag][]interface{}) error {
 			if f.Transport == nil {
 				continue
 			}
-			logging.GetLogger().Debugf("flow = %s, secs = %s", f, secs)
 			initiator_ip := f.Network.A
 			target_ip := f.Network.B
 			initiator_port := strconv.FormatInt(f.Transport.A, 10)
@@ -127,20 +126,24 @@ func (s *storePrometheus) StoreFlows(flows map[core.Tag][]interface{}) error {
 
 // cleanupExpiredEntries - any entry that has expired should be removed from the prometheus reporting and cache
 func (s *storePrometheus) cleanupExpiredEntries() {
-	for true {
-		secs := time.Now().Unix()
-		expireTime := secs - s.connectionTimeout
-		entriesMap := s.connectionCache.Items()
-		for k, v := range entriesMap {
-			v2 := v.Object.(cacheEntry)
-			if v2.timeStamp < expireTime {
-				// clean up the entry
-				logging.GetLogger().Debugf("secs = %s, deleting %s", secs, v2.label1)
-				bytesSent.Delete(v2.label1)
-				bytesSent.Delete(v2.label2)
-				s.connectionCache.Delete(k)
-			}
+	secs := time.Now().Unix()
+	expireTime := secs - s.connectionTimeout
+	entriesMap := s.connectionCache.Items()
+	for k, v := range entriesMap {
+		v2 := v.Object.(cacheEntry)
+		if v2.timeStamp < expireTime {
+			// clean up the entry
+			logging.GetLogger().Debugf("secs = %s, deleting %s", secs, v2.label1)
+			bytesSent.Delete(v2.label1)
+			bytesSent.Delete(v2.label2)
+			s.connectionCache.Delete(k)
 		}
+	}
+}
+
+func (s *storePrometheus) cleanupExpiredEntriesLoop() {
+	for true {
+		s.cleanupExpiredEntries()
 		time.Sleep(cleanupTime * time.Second)
 	}
 }
@@ -167,8 +170,8 @@ func startPrometheusInterface(s *storePrometheus) {
 	}
 }
 
-// NewStorePrometheus returns a new interface for storing flows info to prometheus and starts the interface
-func NewStorePrometheus(cfg *viper.Viper) (interface{}, error) {
+// NewStorePrometheusInternal allocates and initializes the storePrometheus structure
+func NewStorePrometheusInternal(cfg *viper.Viper) (*storePrometheus, error) {
 	// process user defined parameters from yml file
 	port_id := cfg.GetString(core.CfgRoot + "store.prom_sky_con.port")
 	if port_id == "" {
@@ -186,7 +189,16 @@ func NewStorePrometheus(cfg *viper.Viper) (interface{}, error) {
 		connectionCache:   cache.New(0, 0),
 		connectionTimeout: connectionTimeout,
 	}
+	return s, nil
+}
+
+// NewStorePrometheus returns a new interface for storing flows info to prometheus and starts the interface
+func NewStorePrometheus(cfg *viper.Viper) (interface{}, error) {
+	s, err := NewStorePrometheusInternal(cfg)
+	if err != nil {
+		return nil, err
+	}
 	go startPrometheusInterface(s)
-	go s.cleanupExpiredEntries()
+	go s.cleanupExpiredEntriesLoop()
 	return s, nil
 }
